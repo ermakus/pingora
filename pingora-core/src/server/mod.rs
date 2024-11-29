@@ -56,6 +56,8 @@ enum ShutdownType {
 /// The receiver for server's shutdown event. The value will turn to true once the server starts
 /// to shutdown
 pub type ShutdownWatch = watch::Receiver<bool>;
+pub type ShutdownSignal = watch::Sender<bool>;
+
 #[cfg(unix)]
 pub type ListenFds = Arc<Mutex<Fds>>;
 
@@ -68,7 +70,7 @@ pub struct Server {
     services: Vec<Box<dyn Service>>,
     #[cfg(unix)]
     listen_fds: Option<ListenFds>,
-    shutdown_watch: watch::Sender<bool>,
+    pub shutdown_watch: watch::Sender<bool>,
     // TODO: we many want to drop this copy to let sender call closed()
     shutdown_recv: ShutdownWatch,
     /// The parsed server configuration
@@ -93,9 +95,14 @@ impl Server {
         let mut graceful_upgrade_signal = unix::signal(unix::SignalKind::quit()).unwrap();
         let mut graceful_terminate_signal = unix::signal(unix::SignalKind::terminate()).unwrap();
         let mut fast_shutdown_signal = unix::signal(unix::SignalKind::interrupt()).unwrap();
+        let mut shutdown_recv = self.shutdown_recv.clone();
         tokio::select! {
             _ = fast_shutdown_signal.recv() => {
                 info!("SIGINT received, exiting");
+                ShutdownType::Quick
+            },
+            _ = shutdown_recv.changed() => {
+                info!("Shutdown signal received, exiting");
                 ShutdownType::Quick
             },
             _ = graceful_terminate_signal.recv() => {
@@ -405,4 +412,5 @@ impl Server {
             Runtime::new_no_steal(threads, name)
         }
     }
+    
 }
