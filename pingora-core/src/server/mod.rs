@@ -103,7 +103,7 @@ impl Server {
             },
             _ = shutdown_recv.changed() => {
                 info!("Shutdown signal received, exiting");
-                ShutdownType::Quick
+                ShutdownType::Graceful
             },
             _ = graceful_terminate_signal.recv() => {
                 // we receive a graceful terminate, all instances are instructed to stop
@@ -320,7 +320,7 @@ impl Server {
     ///
     /// Note: this function may fork the process for daemonization, so any additional threads created
     /// before this function will be lost to any service logic once this function is called.
-    pub fn run_forever(mut self) -> ! {
+    pub fn run(mut self) {
         info!("Server starting");
 
         let conf = self.configuration.as_ref();
@@ -402,6 +402,11 @@ impl Server {
             }
         }
         info!("All runtimes exited, exiting now");
+    }
+
+    /// Same as [`Self::run()`], but will call `std::process::exit(0)` after the server exits.
+    pub fn run_forever(self) -> ! {
+        self.run();
         std::process::exit(0)
     }
 
