@@ -311,7 +311,9 @@ impl<SV> HttpProxy<SV> {
                 },
 
                 _ = tx.reserve(), if downstream_state.is_reading() && send_permit.is_err() => {
-                    debug!("waiting for permit {send_permit:?}");
+                    // If tx is closed, the upstream has already finished its job.
+                    downstream_state.maybe_finished(tx.is_closed());
+                    debug!("waiting for permit {send_permit:?}, upstream closed {}", tx.is_closed());
                     /* No permit, wait on more capacity to avoid starving.
                      * Otherwise this select only blocks on rx, which might send no data
                      * before the entire body is uploaded.
@@ -490,10 +492,9 @@ impl<SV> HttpProxy<SV> {
                         ctx,
                     );
                     if !session.ignore_downstream_range {
-                        let range_type = proxy_cache::range_filter::range_header_filter(
-                            session.req_header(),
-                            &mut header,
-                        );
+                        let range_type =
+                            self.inner
+                                .range_header_filter(session.req_header(), &mut header, ctx);
                         range_body_filter.set(range_type);
                     }
                 }

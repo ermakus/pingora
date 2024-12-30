@@ -387,13 +387,15 @@ impl HttpSession {
 
     /// Whether there is no more body to read
     pub fn is_body_done(&self) -> bool {
-        self.request_body_reader.is_end_stream()
+        // Check no body in request
+        // Also check we hit end of stream
+        self.is_body_empty() || self.request_body_reader.is_end_stream()
     }
 
-    /// Whether there is any body to read.
+    /// Whether there is any body to read. true means there no body in request.
     pub fn is_body_empty(&self) -> bool {
         self.body_read == 0
-            && (self.is_body_done()
+            && (self.request_body_reader.is_end_stream()
                 || self
                     .request_header
                     .headers
@@ -572,6 +574,151 @@ mod test {
                 http.finish().unwrap();
             }));
         }
+        for handle in handles {
+            // ensure no panics
+            assert!(handle.await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_req_content_length_eq_0_and_no_header_eos() {
+        let (client, server) = duplex(65536);
+
+        let server_body = "test server body";
+
+        let mut handles = vec![];
+
+        handles.push(tokio::spawn(async move {
+            let (h2, connection) = h2::client::handshake(client).await.unwrap();
+            tokio::spawn(async move {
+                connection.await.unwrap();
+            });
+
+            let mut h2 = h2.ready().await.unwrap();
+
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://www.example.com/")
+                .header("content-length", "0") // explicitly set
+                .body(())
+                .unwrap();
+
+            let (response, mut req_body) = h2.send_request(request, false).unwrap(); // no EOS
+
+            let (head, mut body) = response.await.unwrap().into_parts();
+
+            assert_eq!(head.status, 200);
+            let data = body.data().await.unwrap().unwrap();
+            assert_eq!(data, server_body);
+
+            req_body.send_data("".into(), true).unwrap(); // set EOS after read the resp body
+        }));
+
+        let mut connection = handshake(Box::new(server), None).await.unwrap();
+        let digest = Arc::new(Digest::default());
+
+        while let Some(mut http) = HttpSession::from_h2_conn(&mut connection, digest.clone())
+            .await
+            .unwrap()
+        {
+            handles.push(tokio::spawn(async move {
+                let req = http.req_header();
+                assert_eq!(req.method, Method::POST);
+                assert_eq!(req.uri, "https://www.example.com/");
+
+                // 1. Check body related methods
+                http.enable_retry_buffering();
+                assert!(http.is_body_empty());
+                assert!(http.is_body_done());
+                let retry_body = http.get_retry_buffer();
+                assert!(retry_body.is_none());
+
+                // 2. Send response
+                let response_header = Box::new(ResponseHeader::build(200, None).unwrap());
+                assert!(http
+                    .write_response_header(response_header.clone(), false)
+                    .is_ok());
+
+                http.write_body(server_body.into(), false).unwrap();
+                assert_eq!(http.body_bytes_sent(), 16);
+
+                // 3. Waiting for the reset from the client
+                assert!(http.read_body_or_idle(http.is_body_done()).await.is_err());
+            }));
+        }
+
+        for handle in handles {
+            // ensure no panics
+            assert!(handle.await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_req_header_no_eos_empty_data_with_eos() {
+        let (client, server) = duplex(65536);
+
+        let server_body = "test server body";
+
+        let mut handles = vec![];
+
+        handles.push(tokio::spawn(async move {
+            let (h2, connection) = h2::client::handshake(client).await.unwrap();
+            tokio::spawn(async move {
+                connection.await.unwrap();
+            });
+
+            let mut h2 = h2.ready().await.unwrap();
+
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://www.example.com/")
+                .body(())
+                .unwrap();
+
+            let (response, mut req_body) = h2.send_request(request, false).unwrap(); // no EOS
+
+            let (head, mut body) = response.await.unwrap().into_parts();
+
+            assert_eq!(head.status, 200);
+            let data = body.data().await.unwrap().unwrap();
+            assert_eq!(data, server_body);
+
+            req_body.send_data("".into(), true).unwrap(); // set EOS after read the resp body
+        }));
+
+        let mut connection = handshake(Box::new(server), None).await.unwrap();
+        let digest = Arc::new(Digest::default());
+
+        while let Some(mut http) = HttpSession::from_h2_conn(&mut connection, digest.clone())
+            .await
+            .unwrap()
+        {
+            handles.push(tokio::spawn(async move {
+                let req = http.req_header();
+                assert_eq!(req.method, Method::POST);
+                assert_eq!(req.uri, "https://www.example.com/");
+
+                // 1. Check body related methods
+                http.enable_retry_buffering();
+                assert!(!http.is_body_empty());
+                assert!(!http.is_body_done());
+                let retry_body = http.get_retry_buffer();
+                assert!(retry_body.is_none());
+
+                // 2. Send response
+                let response_header = Box::new(ResponseHeader::build(200, None).unwrap());
+                assert!(http
+                    .write_response_header(response_header.clone(), false)
+                    .is_ok());
+
+                http.write_body(server_body.into(), false).unwrap();
+                assert_eq!(http.body_bytes_sent(), 16);
+
+                // 3. Waiting for the client to close stream.
+                http.read_body_or_idle(http.is_body_done()).await.unwrap();
+            }));
+        }
+
         for handle in handles {
             // ensure no panics
             assert!(handle.await.is_ok());
