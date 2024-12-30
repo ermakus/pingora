@@ -116,6 +116,10 @@ impl UninitializedStream {
             Ok(Box::new(self.l4))
         }
     }
+
+    pub fn get_ref(&self) -> &L4Stream {
+        &self.l4
+    }
 }
 
 /// The struct to hold one more multiple listening endpoints

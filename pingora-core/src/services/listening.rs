@@ -33,6 +33,7 @@ use pingora_error::Result;
 use pingora_runtime::current_handle;
 use std::fs::Permissions;
 use std::sync::Arc;
+use crate::protocols::GetSocketDigest;
 
 /// The type of service that is associated with a list of listening endpoints and a particular application
 pub struct Service<A> {
@@ -165,12 +166,13 @@ impl<A: ServerApp + Send + Sync + 'static> Service<A> {
                 Ok(io) => {
                     let app = app_logic.clone();
                     let shutdown = shutdown.clone();
+                    let digest = io.get_ref().get_socket_digest();
                     current_handle().spawn(async move {
                         match io.handshake().await {
                             Ok(io) => Self::handle_event(io, app, shutdown).await,
                             Err(e) => {
                                 // TODO: Maybe IOApp trait needs a fn to handle/filter our this error
-                                error!("Downstream handshake error {e}");
+                                error!("Downstream handshake error {e} ({:?})", digest);
                             }
                         }
                     });
